@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ thống xử lý Excel - Xuất Markdown Brief</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 800px; margin: 0 auto; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #2c3e50; }
+        .upload-section { border: 2px dashed #3498db; padding: 40px; text-align: center; border-radius: 8px; background: #fdfdfd; cursor: pointer; transition: 0.3s; margin-bottom: 20px; display: block; }
+        /* Thêm hiệu ứng trực quan khi file được kéo qua vùng thả */
+        .upload-section:hover, .upload-section.dragover { background: #f1f8ff; border-color: #2ecc71; } 
+        input[type="file"] { display: none; }
+        .btn { background: #3498db; color: #fff; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-size: 16px; transition: 0.3s; }
+        .btn:hover { background: #2980b9; }
+        .btn-success { background: #2ecc71; }
+        .btn-success:hover { background: #27ae60; }
+        .btn-secondary { background: #7f8c8d; }
+        .btn-secondary:hover { background: #687677; }
+        
+        /* Hàng đợi (Queue) */
+        .queue-item { border: 1px solid #e0e0e0; padding: 15px; margin-bottom: 15px; border-radius: 8px; background: #fafafa; }
+        .queue-item h3 { margin-top: 0; font-size: 18px; color: #34495e; display: flex; justify-content: space-between; align-items: center;}
+        .sheet-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+        .sheet-actions .btn { padding: 7px 12px; font-size: 14px; }
+        .sheet-list { display: flex; flex-wrap: wrap; gap: 10px; margin: 15px 0; }
+        .sheet-item { background: #fff; border: 1px solid #ccc; padding: 5px 10px; border-radius: 4px; display: flex; align-items: center; gap: 5px; }
+        .loader { display: none; font-style: italic; color: #7f8c8d; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>Xử Lý File Excel</h1>
+    
+    <label class="upload-section" id="drop-area">
+        <p>Kéo thả các file Excel vào đây hoặc click để chọn file</p>
+        <input type="file" id="fileInput" multiple accept=".xlsx, .xls, .xlsm" onchange="uploadFiles()">
+    </label>
+    
+    <div id="loading" style="display:none; text-align: center; margin-bottom: 20px;">Đang đọc thông tin file...</div>
+    
+    <div id="queue-container"></div>
+</div>
+
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const queueContainer = document.getElementById('queue-container');
+    const loading = document.getElementById('loading');
+    const dropArea = document.getElementById('drop-area'); // Thêm phần tử drop-area
+    let queueItemIndex = 0;
+
+    // 1. Ngăn chặn hành vi mặc định khi kéo file qua và thả xuống (mở file)
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    // 2. Thêm và xóa lớp CSS để tạo hiệu ứng trực quan khi file được kéo qua
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropArea.addEventListener(eventName, highlight, false);
+    });
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropArea.addEventListener(eventName, unhighlight, false);
+    });
+
+    function highlight() {
+        dropArea.classList.add('dragover');
+    }
+    function unhighlight() {
+        dropArea.classList.remove('dragover');
+    }
+
+    // 3. Xử lý sự kiện thả file xuống vùng tải lên
+    dropArea.addEventListener('drop', handleDrop, false);
+
+    function handleDrop(e) {
+        const files = e.dataTransfer.files;
+        if (files.length === 0) return;
+        
+        // Cập nhật danh sách tệp tin trong phần tử đầu vào ẩn, rồi gọi hàm uploadFiles()
+        fileInput.files = files;
+        uploadFiles();
+    }
+
+    function uploadFiles() {
+        // Cả khi kéo thả và click để chọn đều gọi hàm này
+        if (fileInput.files.length === 0) return;
+        loading.style.display = 'block';
+
+        const formData = new FormData();
+        for (let i = 0; i < fileInput.files.length; i++) {
+            formData.append('files', fileInput.files[i]);
+        }
+
+        fetch('/upload', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            loading.style.display = 'none';
+            renderQueue(data);
+            fileInput.value = ''; // Reset input sau khi tải lên thành công để có thể chọn lại file cũ
+        })
+        .catch(error => {
+            loading.style.display = 'none';
+            alert('Có lỗi xảy ra khi tải file lên!');
+        });
+    }
+
+    function renderQueue(files) {
+        // Tái tạo hàng đợi cho các file đã tải lên
+        files.forEach((file) => {
+            const index = queueItemIndex++;
+            const itemDiv = document.createElement('div');
+            itemDiv.className = 'queue-item';
+            itemDiv.id = `queue-item-${index}`;
+            
+            let sheetsHtml = file.sheets.map((sheet, sIndex) => `
+                <label class="sheet-item">
+                    <input type="checkbox" value="${escapeHtml(sheet)}" class="sheet-checkbox-${index}" checked>
+                    ${escapeHtml(sheet)}
+                </label>
+            `).join('');
+
+            itemDiv.innerHTML = `
+                <h3>
+                    📄 ${file.original_name} 
+                    <button class="btn btn-success" onclick='processAndDownload(${JSON.stringify(file.secure_filename)}, ${JSON.stringify(file.original_name)}, ${index})'>Xuất ZIP Markdown</button>
+                </h3>
+                <p style="margin-bottom: 5px; font-size: 14px; color: #7f8c8d;">Vui lòng tích chọn các tab muốn lấy nội dung:</p>
+                <div class="sheet-actions">
+                    <button class="btn" type="button" onclick="setSheetSelection(${index}, true)">Chọn tất cả sheet</button>
+                    <button class="btn btn-secondary" type="button" onclick="setSheetSelection(${index}, false)">Bỏ chọn tất cả sheet</button>
+                </div>
+                <div class="sheet-list">
+                    ${sheetsHtml}
+                </div>
+                <div class="loader" id="loader-${index}">Đang nén dữ liệu Markdown... vui lòng đợi.</div>
+            `;
+            queueContainer.appendChild(itemDiv);
+        });
+    }
+
+    function escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function setSheetSelection(index, checked) {
+        const checkboxes = document.querySelectorAll(`.sheet-checkbox-${index}`);
+        checkboxes.forEach(cb => {
+            cb.checked = checked;
+        });
+    }
+
+    function processAndDownload(secureFilename, originalName, index) {
+        // Lấy danh sách các tab được tích chọn
+        const checkboxes = document.querySelectorAll(`.sheet-checkbox-${index}:checked`);
+        const selectedSheets = Array.from(checkboxes).map(cb => cb.value);
+
+        if (selectedSheets.length === 0) {
+            alert('Vui lòng chọn ít nhất 1 Tab!');
+            return;
+        }
+
+        const loader = document.getElementById(`loader-${index}`);
+        loader.style.display = 'block';
+
+        fetch('/process', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                secure_filename: secureFilename,
+                original_name: originalName,
+                sheets: selectedSheets
+            })
+        })
+        .then(response => response.blob())
+        .then(blob => {
+            loader.style.display = 'none';
+            
+            // Tạo link tải file ảo từ bộ nhớ trình duyệt
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = originalName.split('.')[0] + '.zip';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url); // Giải phóng URL sau khi tải xong để tiết kiệm bộ nhớ
+            
+            // Xóa file khỏi hàng đợi trên giao diện sau khi tải xong
+            document.getElementById(`queue-item-${index}`).remove();
+        })
+        .catch(error => {
+            loader.style.display = 'none';
+            alert('Lỗi trong quá trình trích xuất dữ liệu!');
+        });
+    }
+</script>
+
+</body>
+</html>
